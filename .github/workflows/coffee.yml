@@ -2,7 +2,7 @@ name: Coffee Daily
 
 on:
   schedule:
-    - cron: '0 6 * * 1-5'
+    - cron: "30 5 * * *"   # 05:30 UTC = 08:30 БГ лятно; с типичното закъснение каца ~9:00
   workflow_dispatch:
 
 jobs:
@@ -10,14 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - run: pip install yfinance
-      - run: python coffee_daily.py
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install yfinance
+
+      - name: Run coffee daily
         env:
-          SMTP_HOST: smtp.gmail.com
-          SMTP_PORT: '465'
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          MAIL_TO:   ${{ secrets.MAIL_TO }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python coffee_daily.py
