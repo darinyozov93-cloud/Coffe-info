@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Coffee Daily 2.0 — дневен фундаментален бюлетин за арабика
-Тегли: време по региони (Open-Meteo), USD/BRL и KC=F (Yahoo), COT (CFTC).
+Coffee Daily 2.1 — дневен фундаментален бюлетин за арабика
+Тегли: време 7 дни по региони (Open-Meteo), USD/BRL и KC=F (Yahoo), COT (CFTC).
 ICE запасите се обновяват ръчно в константите по-долу (няма безплатен API).
 """
 
 import os
 import json
+import time
 import datetime
 import urllib.request
 import smtplib
@@ -55,29 +56,39 @@ REGIONS = [
 FROST_LIMIT = 4.0   # °C — под това вдигаме флаг за слана
 DRY_LIMIT = 2.0     # mm за 7 дни — под това е "сухо"
 
+UA = {"User-Agent": "Mozilla/5.0 (compatible; coffee-daily/2.1)"}
 
-def def http_json(url, timeout=15, tries=3):
+
+def http_json(url, timeout=15, tries=3):
+    """GET -> JSON с 3 опита и пауза между тях (retry за муден API)."""
     last = None
     for i in range(tries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (coffee-daily)"})
+            req = urllib.request.Request(url, headers=UA)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
         except Exception as e:
             last = e
-            import time
             time.sleep(2 * (i + 1))
     raise last
 
 
-def http_text(url, timeout=30):
-    req = urllib.request.Request(req_url := url, headers={"User-Agent": "coffee-daily/2.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", errors="replace")
+def http_text(url, timeout=20, tries=3):
+    """GET -> текст с retry."""
+    last = None
+    for i in range(tries):
+        try:
+            req = urllib.request.Request(url, headers=UA)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            last = e
+            time.sleep(2 * (i + 1))
+    raise last
 
 
 # ------------------------------------------------------------
-# 1) Времето — Open-Meteo (безплатно, без ключ)
+# 1) Времето — Open-Meteo (безплатно, без ключ), 7 дни напред
 # ------------------------------------------------------------
 def fetch_weather():
     out = []
@@ -90,15 +101,18 @@ def fetch_weather():
                 "&forecast_days=7&timezone=America%2FSao_Paulo"
             )
             d = http_json(url)["daily"]
-            tmin = min(d["temperature_2m_min"])
-            tmax = max(d["temperature_2m_max"])
-            rain = sum(d["precipitation_sum"])
-            frost_days = sum(1 for t in d["temperature_2m_min"] if t <= FROST_LIMIT)
+            tmins = [t for t in d["temperature_2m_min"] if t is not None]
+            tmaxs = [t for t in d["temperature_2m_max"] if t is not None]
+            rains = [p for p in d["precipitation_sum"] if p is not None]
             out.append({
-                "name": name, "tmin": tmin, "tmax": tmax,
-                "rain": rain, "frost_days": frost_days,
+                "name": name,
+                "tmin": min(tmins),
+                "tmax": max(tmaxs),
+                "rain": sum(rains),
+                "frost_days": sum(1 for t in tmins if t <= FROST_LIMIT),
             })
         except Exception as e:
+            print("WEATHER ERROR:", name, "->", repr(e))
             out.append({"name": name, "error": str(e)})
     return out
 
@@ -148,12 +162,13 @@ def fetch_cot():
                     "c_net": c_long - c_short,
                 }
     except Exception as e:
+        print("COT ERROR:", repr(e))
         return {"error": str(e)}
     return {"error": "COFFEE C не е намерен в CFTC файла"}
 
 
 # ------------------------------------------------------------
-# 4) Модел за справедлива цена → вердикт
+# 4) Модел за справедлива цена -> вердикт
 # ------------------------------------------------------------
 def compute(mkt, weather, today):
     base = 200          # базова котва
@@ -161,7 +176,7 @@ def compute(mkt, weather, today):
     stocks_adj = 15     # ниски ICE запаси
     balance = -10       # очакван излишък 2026/27 (рекордна реколта)
 
-    # сезонен фактор: прозорец за слана юни–август
+    # сезонен фактор: прозорец за слана юни-август
     month = today.month
     seasonal = 25 if month in (6, 7, 8) else (10 if month in (5, 9) else 0)
 
@@ -213,7 +228,8 @@ def build_html(mkt, weather, cot, m, today):
     wrows = ""
     for w in weather:
         if "error" in w:
-            wrows += f'<tr><td colspan="4" style="padding:4px 8px;color:#b71c1c">{w["name"]}: грешка</td></tr>'
+            wrows += (f'<tr><td colspan="4" style="padding:4px 8px;color:#b71c1c">'
+                      f'{w["name"]}: {w["error"]}</td></tr>')
             continue
         frost = ("❄️ %d дни" % w["frost_days"]) if w["frost_days"] else "—"
         dry = " (сухо)" if w["rain"] < DRY_LIMIT else ""
@@ -226,7 +242,7 @@ def build_html(mkt, weather, cot, m, today):
 
     # COT
     if "error" in cot:
-        cot_html = f'<p style="color:#b71c1c">COT недостъпен: {cot["error"]}</p>'
+        cot_html = f'<p style="color:#b71c1c;margin:4px 16px">COT недостъпен: {cot["error"]}</p>'
     else:
         net_dir = "ЛОНГ" if cot["nc_net"] > 0 else "ШОРТ"
         cot_html = f"""
@@ -240,7 +256,7 @@ def build_html(mkt, weather, cot, m, today):
         </table>"""
 
     comp_rows = "".join(row(k, f"{v:+d}") for k, v in m["components"])
-    frost_warn = ('<p style="color:#b71c1c;font-weight:bold">⚠️ ПРОГНОЗА ЗА СЛАНА '
+    frost_warn = ('<p style="color:#b71c1c;font-weight:bold;margin:8px 16px">⚠️ ПРОГНОЗА ЗА СЛАНА '
                   'в поне един регион през следващите 7 дни!</p>') if m["frost_flag"] else ""
 
     kc_arrow = "▲" if mkt["kc_chg"] >= 0 else "▼"
@@ -267,7 +283,7 @@ def build_html(mkt, weather, cot, m, today):
 
       {frost_warn}
 
-      <h3 style="margin:14px 16px 4px">🌦️ Време — арабика региони (7 дни)</h3>
+      <h3 style="margin:14px 16px 4px">🌦️ Време — арабика региони (7 дни напред)</h3>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <tr style="background:#efebe9">
           <th style="padding:4px 8px;text-align:left">Регион</th>
