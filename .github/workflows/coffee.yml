@@ -1,4 +1,4 @@
-name: Softs Daily
+name: Coffee Daily
 
 on:
   schedule:
@@ -18,9 +18,9 @@ jobs:
       - name: Install deps
         run: pip install yfinance
 
-      - name: Run softs daily
+      - name: Run coffee daily
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-        run: python softs_daily.py
+        run: python coffee_daily.py
